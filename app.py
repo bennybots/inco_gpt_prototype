@@ -976,7 +976,7 @@ doc_md = f"""# Advisory Summary
 3. We will produce the {deliverable.lower()} for your review.
 """
 
-    st.download_button(
+        st.download_button(
             "Download Advisory_Summary.md",
             data=doc_md.encode("utf-8"),
             file_name="Advisory_Summary.md",
@@ -1000,7 +1000,12 @@ doc_md = f"""# Advisory Summary
 
         st.subheader("Downloads")
         for name, data in files:
-            st.download_button(label=f"Download {name}", data=data, file_name=name, mime="text/markdown")
+            st.download_button(
+                label=f"Download {name}",
+                data=data,
+                file_name=name,
+                mime="text/markdown"
+            )
 
 # =======================
 # 🧹 NOTE: Removed/disabled old retriever/Chroma code that referenced undefined vars
