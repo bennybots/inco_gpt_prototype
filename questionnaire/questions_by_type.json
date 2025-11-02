@@ -1,0 +1,30 @@
+{
+  "Cost Plus": [
+    "What is the markup applied?",
+    "Who owns the IP for the services provided?",
+    "What type of services are provided by the foreign entity?",
+    "How are costs tracked for internal service providers?"
+  ],
+  "Licensing": [
+    "What kind of IP is being licensed?",
+    "How are royalties calculated?",
+    "Is the license exclusive or non-exclusive?",
+    "Who owns the licensed IP?"
+  ],
+  "LRD": [
+    "Which entity performs the marketing and sales functions?",
+    "Who bears the inventory risk?",
+    "Who is responsible for customer service in each country?"
+  ],
+  "Commission": [
+    "Who is the commissionaire?",
+    "Which markets do they operate in?",
+    "How is commission calculated?"
+  ],
+  "General": [
+    "Please describe your company\u2019s structure.",
+    "Which countries do you operate in?",
+    "How many employees are in each location?",
+    "What is your company\u2019s main industry?"
+  ]
+}
