@@ -976,7 +976,7 @@ doc_md = f"""# Advisory Summary
 3. We will produce the {deliverable.lower()} for your review.
 """
 
-        st.download_button(
+    st.download_button(
             "Download Advisory_Summary.md",
             data=doc_md.encode("utf-8"),
             file_name="Advisory_Summary.md",
