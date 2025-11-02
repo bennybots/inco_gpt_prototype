@@ -278,6 +278,85 @@ def _fmt(v):
         return "\n".join([f"- {x}" for x in v]) or "—"
     return v if (isinstance(v, str) and v.strip()) else "—"
 
+# ---------- Helpers for clearer summary / Eran-style reasoning ----------
+def _bool_to_yesno(v: bool | None) -> str:
+    return "Yes" if v else ("No" if v is not None else "Unknown")
+
+def older_than_12mo_flag(f: CaseFacts) -> bool | None:
+    """Infer 'older than 12 months' from founded_year and/or age_lt_12mo."""
+    try:
+        yr = f.founded_year
+        if f.age_lt_12mo is True:
+            return False
+        if f.age_lt_12mo is False:
+            return True
+        if yr:
+            return (dt.date.today().year - int(yr)) >= 2  # conservative: >=2 calendar years → >12m
+    except Exception:
+        pass
+    return None  # unknown
+
+def deliverable_reason(f: CaseFacts) -> str:
+    flag = older_than_12mo_flag(f)
+    if f.age_lt_12mo is True:
+        return ("**Startup package recommended** because the entity is **younger than 12 months**. "
+                "Prepare an Intercompany Agreement and a Guidance Memo now; produce a Transfer Pricing Report after first fiscal year.")
+    if f.age_lt_12mo is False:
+        return ("**Transfer Pricing Report recommended** because the entity appears **older than 12 months** "
+                "and should have sufficient financial data for a Local File.")
+    if flag is True:
+        return ("**Transfer Pricing Report recommended** inferred from the founded year (older than ~12 months).")
+    if flag is False:
+        return ("**Startup package recommended** inferred from a very recent founded year (<~12 months).")
+    return ("Insufficient age info. Defaulting to **Startup package (IC Agreement + Guidance Memo)** until age is confirmed.")
+
+def pros_for_model(tx_type: str) -> list[str]:
+    tx_type = (tx_type or "").lower()
+    if "resale" in tx_type or "lrd" in tx_type:
+        return [
+            "Aligns with a sales/marketing-focused entity that bears limited risks.",
+            "Common OECD-accepted distributor framework with clear routine margin.",
+            "Simplifies compliance and monitoring for intercompany transactions.",
+            "Helps reduce overall tax friction on cross-border flows.",
+        ]
+    if "services" in tx_type or "cost plus" in tx_type:
+        return [
+            "Clear routine return on provider’s operating costs.",
+            "Straightforward to document and benchmark for support functions.",
+            "Lower controversy risk vs. entrepreneurial returns.",
+        ]
+    if "licensing" in tx_type or "royalty" in tx_type:
+        return [
+            "Separates returns to IP owner from operating entities.",
+            "Supports scalability across multiple markets and users.",
+            "Flexible to align with CUP/benchmark ranges when available.",
+        ]
+    if "contract manufacturing" in tx_type:
+        return [
+            "Risk-stripped manufacturer earns a routine return.",
+            "Clear allocation of inventory/market risks away from manufacturer.",
+        ]
+    if "commissionaire" in tx_type or "agency" in tx_type:
+        return [
+            "Sales presence without full-risk distributor exposure.",
+            "Remuneration tied to commissions vs. gross margins.",
+        ]
+    if "financing" in tx_type or "loans" in tx_type:
+        return [
+            "Allows arm’s-length pricing of intercompany funding.",
+            "Separates financial risk/return from operating entities.",
+        ]
+    return ["Model selected based on functions, assets, and risks described."]
+
+def required_docs_for(deliverables: list[str]) -> list[str]:
+    out = []
+    if "Intercompany Agreement" in deliverables:
+        out.append("Intercompany Agreement: outlines scope, pricing method, and responsibilities.")
+    if "Guidance Memo" in deliverables:
+        out.append("Guidance Memo: policy note explaining methodology and controls.")
+    if "Transfer Pricing Report" in deliverables:
+        out.append("Transfer Pricing Report (Local File): OECD-aligned documentation for the fiscal year.")
+    return out
 
 
 def extract_source_text(raw_url: str, about_text: str) -> tuple[str, str]:
@@ -707,19 +786,53 @@ if extracted:
         pass
 
     # Classify on merged facts to get the current best recommendation + rationale
-    llm = LLM()
-    cls_summary = classify_transaction(llm, asdict(facts))
-    tx_type_summary = cls_summary.get("transaction_type") or facts.recommended_model or "TBD"
-    rationale_summary = cls_summary.get("short_rationale") or "Based on the provided facts and roles."
+  # Classify on merged facts to get recommendation + rationale
+llm = LLM()
+cls_summary = classify_transaction(llm, asdict(facts))
+tx_type_summary = cls_summary.get("transaction_type") or facts.recommended_model or "TBD"
+rationale_summary = cls_summary.get("short_rationale") or "Based on the provided facts and roles."
 
-    # Display the recommendation and why
-    st.markdown(f"**Proposed model:** {tx_type_summary}")
-    st.markdown("**Why this fits:**")
-    st.write(rationale_summary)
+st.markdown(f"### Suggested transfer pricing model\n**{tx_type_summary}**")
 
-    # Display the key facts we’re using — HUMAN READABLE
-    st.markdown("**Key facts used:**")
-    st.markdown(format_key_facts_md(facts))
+# Company snapshot (bold, confirmable)
+age_known = older_than_12mo_flag(facts)
+st.markdown("#### Company snapshot (confirm)")
+st.markdown(
+    "\n".join([
+        f"- **Entity 1:** {facts.full_legal_name_1 or '—'}",
+        f"- **Entity 2:** {facts.full_legal_name_2 or '—'}",
+        f"- **Founded year:** {facts.founded_year or '—'}",
+        f"- **Older than 12 months:** {_bool_to_yesno(age_known)}",
+        f"- **Primary channel / flows:** {facts.transaction_flows or '—'}",
+        f"- **IP noted:** {facts.ip_assets or '—'}",
+        f"- **Countries:** {', '.join(facts.countries_of_incorp) or '—'}",
+    ])
+)
+
+# Why this fits
+st.markdown("#### Why this fits")
+st.write(rationale_summary)
+
+# Why this deliverable (reasoning)
+age_reason = deliverable_reason(facts)
+st.markdown("#### Why this deliverable")
+st.write(age_reason)
+
+# Key facts (still readable bullets)
+st.markdown("#### Main facts used")
+st.markdown(format_key_facts_md(facts))
+
+# Dispute / agreement controls (unchanged)
+col_agree, col_disagree = st.columns([1,1])
+with col_agree:
+    st.session_state.summary_agree = st.checkbox(
+        "I confirm this summary is correct.",
+        value=st.session_state.get("summary_agree", False)
+    )
+with col_disagree:
+    if st.button("I do not agree with this summary"):
+        st.session_state.dispute_mode = True
+
 
     # Dispute flow
     col_agree, col_disagree = st.columns([1,1])
@@ -818,15 +931,35 @@ if extracted:
         reason = cls.get("short_rationale") or "Based on provided facts."
         deliverable = "IC Agreement + Guidance Memo" if facts.age_lt_12mo else "Transfer Pricing Report (summary)"
 
-        doc_md = f"""# Advisory Summary
+        pros_list = pros_for_model(tx_type)
+req_docs = required_docs_for(deliverables)
+
+doc_md = f"""# Advisory Summary
 
 **Client:** {facts.full_legal_name_1 or "ClientCo"}  
 **Counterparty:** {facts.full_legal_name_2 or "RelatedCo"}  
-**Proposed Model:** {tx_type}  
-**Deliverable (now):** {deliverable}
 
-## Why we recommend this
+## Suggested Transfer Pricing Model
+**{tx_type}**
+
+## Company Snapshot (confirm)
+- **Founded year:** {facts.founded_year or "—"}
+- **Older than 12 months:** {_bool_to_yesno(older_than_12mo_flag(facts))}
+- **Primary channel / flows:** {facts.transaction_flows or "—"}
+- **IP noted:** {facts.ip_assets or "—"}
+- **Countries:** {(", ".join(facts.countries_of_incorp)) if facts.countries_of_incorp else "—"}
+
+## Strategic Recommendation Summary
 {reason}
+
+### Why this deliverable
+{deliverable_reason(facts)}
+
+### Pros of this model
+{os.linesep.join(f"- {p}" for p in pros_list)}
+
+### Required documents
+{os.linesep.join(f"- {d}" for d in req_docs)}
 
 ## Main facts (from your inputs)
 {format_key_facts_md(facts)}
@@ -838,9 +971,9 @@ if extracted:
 - Benchmarks (we will attach)
 
 ## Next Steps
-1. Confirm summary above
-2. Provide the items listed under “What I still need”
-3. We will produce the {deliverable.lower()} for your review
+1. Confirm this summary (or flag anything that looks off).
+2. Provide the items listed under “What I still need.”
+3. We will produce the {deliverable.lower()} for your review.
 """
 
         st.download_button(
