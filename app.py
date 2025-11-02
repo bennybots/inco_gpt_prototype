@@ -775,7 +775,7 @@ def process_dispute_turn(llm: LLM, user_msg: str, facts: CaseFacts) -> dict:
 if extracted:
     st.subheader("Summary for approval")
 
-    # Merge extracted + any edited values into one set of facts
+    # Build facts FIRST (merge extracted + any edits)
     facts = _merge_facts(st.session_state.extracted, st.session_state.edited)
 
     # Gentle nudge if age flag conflicts with founded year
@@ -785,56 +785,22 @@ if extracted:
     except Exception:
         pass
 
-    # Classify on merged facts to get the current best recommendation + rationale
-  # Classify on merged facts to get recommendation + rationale
-llm = LLM()
-cls_summary = classify_transaction(llm, asdict(facts))
-tx_type_summary = cls_summary.get("transaction_type") or facts.recommended_model or "TBD"
-rationale_summary = cls_summary.get("short_rationale") or "Based on the provided facts and roles."
+    # Classify on merged facts (now facts is defined)
+    llm = LLM()
+    cls_summary = classify_transaction(llm, asdict(facts))
+    tx_type_summary = cls_summary.get("transaction_type") or facts.recommended_model or "TBD"
+    rationale_summary = cls_summary.get("short_rationale") or "Based on the provided facts and roles."
 
-st.markdown(f"### Suggested transfer pricing model\n**{tx_type_summary}**")
+    # Display the recommendation and why
+    st.markdown(f"**Proposed model:** {tx_type_summary}")
+    st.markdown("**Why this fits:**")
+    st.write(rationale_summary)
 
-# Company snapshot (bold, confirmable)
-age_known = older_than_12mo_flag(facts)
-st.markdown("#### Company snapshot (confirm)")
-st.markdown(
-    "\n".join([
-        f"- **Entity 1:** {facts.full_legal_name_1 or '—'}",
-        f"- **Entity 2:** {facts.full_legal_name_2 or '—'}",
-        f"- **Founded year:** {facts.founded_year or '—'}",
-        f"- **Older than 12 months:** {_bool_to_yesno(age_known)}",
-        f"- **Primary channel / flows:** {facts.transaction_flows or '—'}",
-        f"- **IP noted:** {facts.ip_assets or '—'}",
-        f"- **Countries:** {', '.join(facts.countries_of_incorp) or '—'}",
-    ])
-)
+    # Readable key facts
+    st.markdown("**Key facts used:**")
+    st.markdown(format_key_facts_md(facts))
 
-# Why this fits
-st.markdown("#### Why this fits")
-st.write(rationale_summary)
-
-# Why this deliverable (reasoning)
-age_reason = deliverable_reason(facts)
-st.markdown("#### Why this deliverable")
-st.write(age_reason)
-
-# Key facts (still readable bullets)
-st.markdown("#### Main facts used")
-st.markdown(format_key_facts_md(facts))
-
-# Dispute / agreement controls (unchanged)
-col_agree, col_disagree = st.columns([1,1])
-with col_agree:
-    st.session_state.summary_agree = st.checkbox(
-        "I confirm this summary is correct.",
-        value=st.session_state.get("summary_agree", False)
-    )
-with col_disagree:
-    if st.button("I do not agree with this summary"):
-        st.session_state.dispute_mode = True
-
-
-    # Dispute flow
+    # Agree / disagree controls
     col_agree, col_disagree = st.columns([1,1])
     with col_agree:
         st.session_state.summary_agree = st.checkbox(
@@ -845,7 +811,7 @@ with col_disagree:
         if st.button("I do not agree with this summary"):
             st.session_state.dispute_mode = True
 
-    # Chat mode if disputed
+    # Dispute chat (optional)
     if st.session_state.get("dispute_mode"):
         st.divider()
         st.subheader("Discuss with advisor (chat)")
@@ -866,7 +832,6 @@ with col_disagree:
 
                 action = resp.get("action","")
                 if action == "update" and isinstance(resp.get("edits"), dict):
-                    # merge edits into edited and refresh summary on next rerun
                     st.session_state.edited.update(resp["edits"])
                     st.success("Thanks — I’ve updated the facts and refreshed the summary.")
                     st.session_state.summary_agree = False
@@ -874,7 +839,7 @@ with col_disagree:
                     st.rerun()
                 elif action == "escalate":
                     st.info("Please speak with Eran about this specific situation.")
-                else:  # disagree or unknown
+                else:
                     st.info("I disagree based on the provided information. If you still have concerns, please talk to Eran.")
 
 # =======================
