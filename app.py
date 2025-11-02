@@ -10,6 +10,7 @@ from typing import List, Dict, Tuple
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import streamlit as st
+import hashlib
 
 # your existing extractor (unchanged)
 from app.ie.extractors import extract_from_chunk
@@ -946,7 +947,9 @@ if extracted:
             data=doc_md.encode("utf-8"),
             file_name="Advisory_Summary.md",
             mime="text/markdown",
+            key="dl_advisory_summary"
         )
+
 
         # ----- Save case log -----
         import pathlib, datetime as _dt
@@ -964,13 +967,15 @@ if extracted:
         st.caption(f"Saved case log → {case_path}")
 
         st.subheader("Downloads")
-        for name, data in files:
-            st.download_button(
+        for i, (name, data) in enumerate(files):
+             st.download_button(
                 label=f"Download {name}",
-                data=data,
+                 data=data,
                 file_name=name,
-                mime="text/markdown",
+                 mime="text/markdown",
+                 key=f"dl_{i}_{hashlib.md5(name.encode()).hexdigest()}"
             )
+
 
 
             # ----- Save case log -----
