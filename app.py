@@ -976,36 +976,36 @@ doc_md = f"""# Advisory Summary
 3. We will produce the {deliverable.lower()} for your review.
 """
 
-        st.download_button(
-            "Download Advisory_Summary.md",
-            data=doc_md.encode("utf-8"),
-            file_name="Advisory_Summary.md",
-            mime="text/markdown",
-        )
-
-        # ----- Save case log -----
-        import pathlib, datetime as _dt
-        case_dir = pathlib.Path("knowledge/cases")
-        case_dir.mkdir(parents=True, exist_ok=True)
-        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        case_payload = {
-            "facts": asdict(facts),
-            "classification": cls,
-            "advisory_md": doc_md,
-        }
-        case_path = case_dir / f"CASE_{ts}.json"
-        with open(case_path, "w", encoding="utf-8") as f:
-            json.dump(case_payload, f, ensure_ascii=False, indent=2)
-        st.caption(f"Saved case log → {case_path}")
-
-        st.subheader("Downloads")
-        for name, data in files:
             st.download_button(
-                label=f"Download {name}",
-                data=data,
-                file_name=name,
-                mime="text/markdown"
+                "Download Advisory_Summary.md",
+                data=doc_md.encode("utf-8"),
+                file_name="Advisory_Summary.md",
+                mime="text/markdown",
             )
+
+            # ----- Save case log -----
+            import pathlib, datetime as _dt
+            case_dir = pathlib.Path("knowledge/cases")
+            case_dir.mkdir(parents=True, exist_ok=True)
+            ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            case_payload = {
+                "facts": asdict(facts),
+                "classification": cls,
+                "advisory_md": doc_md,
+            }
+            case_path = case_dir / f"CASE_{ts}.json"
+            with open(case_path, "w", encoding="utf-8") as f:
+                json.dump(case_payload, f, ensure_ascii=False, indent=2)
+            st.caption(f"Saved case log → {case_path}")
+
+            st.subheader("Downloads")
+            for name, data in files:
+                st.download_button(
+                    label=f"Download {name}",
+                    data=data,
+                    file_name=name,
+                    mime="text/markdown"
+                )
 
 # =======================
 # 🧹 NOTE: Removed/disabled old retriever/Chroma code that referenced undefined vars
