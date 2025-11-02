@@ -932,56 +932,81 @@ if extracted:
         deliverable = "IC Agreement + Guidance Memo" if facts.age_lt_12mo else "Transfer Pricing Report (summary)"
 
         pros_list = pros_for_model(tx_type)
-        req_docs = required_docs_for(deliverables)
+        req_docs  = required_docs_for(deliverables)
 
         doc_md = f"""# Advisory Summary
 
-        **Client:** {facts.full_legal_name_1 or "ClientCo"}  
-        **Counterparty:** {facts.full_legal_name_2 or "RelatedCo"}  
+**Client:** {facts.full_legal_name_1 or "ClientCo"}  
+**Counterparty:** {facts.full_legal_name_2 or "RelatedCo"}  
 
-        ## Suggested Transfer Pricing Model
-        **{tx_type}**
+## Suggested Transfer Pricing Model
+**{tx_type}**
 
-        ## Company Snapshot (confirm)
-        - **Founded year:** {facts.founded_year or "—"}
-        - **Older than 12 months:** {_bool_to_yesno(older_than_12mo_flag(facts))}
-        - **Primary channel / flows:** {facts.transaction_flows or "—"}
-        - **IP noted:** {facts.ip_assets or "—"}
-        - **Countries:** {(", ".join(facts.countries_of_incorp)) if facts.countries_of_incorp else "—"}
+## Company Snapshot (confirm)
+- **Founded year:** {facts.founded_year or "—"}
+- **Older than 12 months:** {_bool_to_yesno(older_than_12mo_flag(facts))}
+- **Primary channel / flows:** {facts.transaction_flows or "—"}
+- **IP noted:** {facts.ip_assets or "—"}
+- **Countries:** {(", ".join(facts.countries_of_incorp)) if facts.countries_of_incorp else "—"}
 
-        ## Strategic Recommendation Summary
-        {reason}
+## Strategic Recommendation Summary
+{reason}
 
-        ### Why this deliverable
-        {deliverable_reason(facts)}
+### Why this deliverable
+{deliverable_reason(facts)}
 
-        ### Pros of this model
-        {os.linesep.join(f"- {p}" for p in pros_list)}
+### Pros of this model
+{os.linesep.join(f"- {p}" for p in pros_list)}
 
-        ### Required documents
-        {os.linesep.join(f"- {d}" for d in req_docs)}
+### Required documents
+{os.linesep.join(f"- {d}" for d in req_docs)}
 
-        ## Main facts (from your inputs)
-        {format_key_facts_md(facts)}
+## Main facts (from your inputs)
+{format_key_facts_md(facts)}
 
-        ## What I still need
-        - Org chart & entity registrations
-        - Financials / margins by function
-        - Contracts (if any)
-        - Benchmarks (we will attach)
+## What I still need
+- Org chart & entity registrations
+- Financials / margins by function
+- Contracts (if any)
+- Benchmarks (we will attach)
 
-        ## Next Steps
-        1. Confirm this summary (or flag anything that looks off).
-        2. Provide the items listed under “What I still need.”
-        3. We will produce the {deliverable.lower()} for your review.
-        """
+## Next Steps
+1. Confirm this summary (or flag anything that looks off).
+2. Provide the items listed under “What I still need.”
+3. We will produce the {deliverable.lower()} for your review.
+"""
 
+        st.download_button(
+            "Download Advisory_Summary.md",
+            data=doc_md.encode("utf-8"),
+            file_name="Advisory_Summary.md",
+            mime="text/markdown",
+        )
+
+        # ----- Save case log -----
+        import pathlib, datetime as _dt
+        case_dir = pathlib.Path("knowledge/cases")
+        case_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        case_payload = {
+            "facts": asdict(facts),
+            "classification": cls,
+            "advisory_md": doc_md,
+        }
+        case_path = case_dir / f"CASE_{ts}.json"
+        with open(case_path, "w", encoding="utf-8") as f:
+            json.dump(case_payload, f, ensure_ascii=False, indent=2)
+        st.caption(f"Saved case log → {case_path}")
+
+        st.subheader("Downloads")
+        for name, data in files:
             st.download_button(
-                "Download Advisory_Summary.md",
-                data=doc_md.encode("utf-8"),
-                file_name="Advisory_Summary.md",
+                label=f"Download {name}",
+                data=data,
+                file_name=name,
                 mime="text/markdown",
             )
+
 
             # ----- Save case log -----
             import pathlib, datetime as _dt
