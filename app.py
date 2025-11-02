@@ -942,14 +942,14 @@ if extracted:
 3. We will produce the {deliverable.lower()} for your review.
 """
 
+                # Download: Advisory_Summary.md
         st.download_button(
             "Download Advisory_Summary.md",
             data=doc_md.encode("utf-8"),
             file_name="Advisory_Summary.md",
             mime="text/markdown",
-            key="dl_advisory_summary"
+            key="dl_advisory_summary",
         )
-
 
         # ----- Save case log -----
         import pathlib, datetime as _dt
@@ -966,15 +966,18 @@ if extracted:
             json.dump(case_payload, f, ensure_ascii=False, indent=2)
         st.caption(f"Saved case log → {case_path}")
 
+        # ----- Other downloads (generated docs) -----
+        import hashlib
         st.subheader("Downloads")
         for i, (name, data) in enumerate(files):
-             st.download_button(
+            st.download_button(
                 label=f"Download {name}",
-                 data=data,
+                data=data,
                 file_name=name,
-                 mime="text/markdown",
-                 key=f"dl_{i}_{hashlib.md5(name.encode()).hexdigest()}"
+                mime="text/markdown",
+                key=f"dl_{i}_{hashlib.md5(name.encode()).hexdigest()}",
             )
+
 
 
 
