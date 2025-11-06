@@ -1,4 +1,5 @@
-# app.py — Incodox GPT (updated per Eran's feedback)
+from __future__ import annotations
+
 # Drop-in replacement: keeps your extractor + adds Summary of Approval (email style),
 # supply-chain diagram, real dispute chat, mandatory About Us, fixed deliverables,
 # and added fields (legal addresses, employees/roles).
@@ -255,6 +256,40 @@ def _fmt(v):
     if isinstance(v, (list, tuple)):
         return "\n".join([f"- {x}" for x in v]) or "—"
     return v if (isinstance(v, str) and v.strip()) else "—"
+
+DIAGRAM_EDIT_SYSTEM = (
+    "You are a structured editor for a simple 2-box supply-chain diagram.\n"
+    "Given the current facts and the user's note, output JSON ONLY with any of:\n"
+    "{"
+    "  'entity1_name': <str>,        # new name for Entity 1\n"
+    "  'entity2_name': <str>,        # new name for Entity 2\n"
+    "  'flow_label': <str>,          # text shown on the arrow\n"
+    "  'direction': 'E1->E2'|'E2->E1' # optional; default E1->E2\n"
+    "}\n"
+    "Keep changes minimal. Do not invent entities beyond two. If unclear, return {}."
+)
+
+def propose_diagram_update(llm: LLM, user_msg: str, facts: CaseFacts) -> dict:
+    payload = {
+        "current_facts": asdict(facts),
+        "instruction": user_msg
+    }
+    return llm.json(DIAGRAM_EDIT_SYSTEM, json.dumps(payload, ensure_ascii=False))
+
+def apply_diagram_edits(facts: CaseFacts, edits: dict) -> CaseFacts:
+    # clone current
+    f = CaseFacts(**asdict(facts))
+    if edits.get("entity1_name"):
+        f.full_legal_name_1 = edits["entity1_name"].strip()
+    if edits.get("entity2_name"):
+        f.full_legal_name_2 = edits["entity2_name"].strip()
+    if edits.get("flow_label"):
+        f.transaction_flows = edits["flow_label"].strip()
+    # encode arrow direction inside the label for now
+    if edits.get("direction") == "E2->E1":
+        f.transaction_flows = (f.transaction_flows or "Goods/Services/IP") + "  (E2 → E1)"
+    return f
+
 
 # =======================
 # Visualization & explainers
@@ -784,37 +819,67 @@ if extracted:
     # Supply chain diagram
     st.markdown("#### Visualize supply chain (confirm)")
     try:
-        g = supply_chain_dot(facts)
-        st.graphviz_chart(g)   # g is a DOT string now
-
+        g_dot = supply_chain_dot(facts)
+        st.graphviz_chart(g_dot, use_container_width=True)
     except Exception:
         st.info("Supply chain diagram unavailable — fill entity names and flows.")
-    st.checkbox("I confirm the supply chain diagram is correct.", key="confirm_diagram")
 
-    # Email-style summary (Eran exact format)
-    tx_type_summary = cls_summary.get("transaction_type") or facts.recommended_model or "TBD"
-    email_md = render_eran_email_summary(facts, tx_type_summary, title="Summary")
-    st.markdown("### Summary of Approval (Eran email format)")
-    st.markdown(email_md)
-    with st.expander("Copy raw text for email"):
-        st.code(email_md, language="markdown")
-    # quick export for copy/paste to email
-    with st.expander("Copy plain text for email (no Markdown)"):
-        st.text(email_md)
-    st.download_button(
-        "Download Summary_Email.md",
-        data=email_md.encode("utf-8"),
-        file_name="Summary_Email.md",
-        mime="text/markdown",
-    )
+    cols = st.columns([1, 1, 2])
+    with cols[0]:
+        st.checkbox("I confirm the supply chain diagram is correct.", key="confirm_diagram")
+    with cols[1]:
+        open_edit = st.button("This diagram is wrong")
 
+    # simple chat lane for diagram fixes
+    if open_edit or st.session_state.get("diagram_edit_open"):
+        st.session_state.diagram_edit_open = True
+        st.divider()
+        st.subheader("Adjust the diagram")
+
+        if "diagram_chat" not in st.session_state:
+            st.session_state.diagram_chat = []
+
+        for role, msg in st.session_state.diagram_chat[-6:]:
+            st.chat_message(role).markdown(msg)
+
+        user_msg = st.chat_input(
+            "Describe what to change (names, flow text, or direction).",
+            key="diagram_chat_input"     # UNIQUE KEY
+        )
+        if user_msg:
+            st.session_state.diagram_chat.append(("user", user_msg))
+            with st.chat_message("assistant"):
+                llm = LLM()
+                edits = propose_diagram_update(llm, user_msg, facts) or {}
+
+                preview = (
+                    "Proposed edits:\n" +
+                    "\n".join(f"- **{k}** → {v}" for k, v in edits.items())
+                    if edits else "I couldn't infer a clear change. Please be more specific."
+                )
+                st.markdown(preview)
+
+                if edits:
+                    # apply changes and persist in edited state
+                    new_facts = apply_diagram_edits(facts, edits)
+                    st.session_state.edited.update({
+                        "full_legal_name_1": new_facts.full_legal_name_1,
+                        "full_legal_name_2": new_facts.full_legal_name_2,
+                        "transaction_flows": new_facts.transaction_flows,
+                    })
+                    st.success("Updated. Re-rendering diagram…")
+                    st.session_state.diagram_chat.append(("assistant", preview))
+                    st.session_state.confirm_diagram = False
+                    st.rerun()
+                else:
+                    st.session_state.diagram_chat.append(("assistant", preview))
 
     # Key facts
     st.markdown("#### Main facts used")
     st.markdown(format_key_facts_md(facts))
 
     # Agree / Disagree with working chat
-    col_agree, col_disagree = st.columns([1,1])
+    col_agree, col_disagree = st.columns([1, 1])
     with col_agree:
         st.session_state.summary_agree = st.checkbox(
             "I confirm this summary is correct.",
@@ -834,17 +899,20 @@ if extracted:
         for role, msg in st.session_state.chat:
             st.chat_message(role).markdown(msg)
 
-        user_msg = st.chat_input("Tell us what’s off — we’ll adjust or escalate to Eran.")
-        if user_msg:
-            st.session_state.chat.append(("user", user_msg))
-            st.chat_message("user").markdown(user_msg)
+        user_msg2 = st.chat_input(
+            "Tell us what’s off — we’ll adjust or escalate to Eran.",
+            key="dispute_chat_input"     # UNIQUE KEY
+        )
+        if user_msg2:
+            st.session_state.chat.append(("user", user_msg2))
+            st.chat_message("user").markdown(user_msg2)
 
             with st.chat_message("assistant"):
-                resp = process_dispute_turn(llm, user_msg, facts)
-                st.session_state.chat.append(("assistant", resp.get("message","")))
-                st.markdown(resp.get("message",""))
+                resp = process_dispute_turn(llm, user_msg2, facts)
+                st.session_state.chat.append(("assistant", resp.get("message", "")))
+                st.markdown(resp.get("message", ""))
 
-                action = resp.get("action","")
+                action = resp.get("action", "")
                 if action == "update" and isinstance(resp.get("edits"), dict):
                     st.session_state.edited.update(resp["edits"])
                     st.success("Updated facts based on your notes. Refreshing the summary…")
@@ -855,6 +923,7 @@ if extracted:
                     st.info("This looks nuanced — please speak with Eran.")
                 else:
                     st.info("Noted. If you still have concerns, please speak with Eran.")
+
 
 # =======================
 # Deliverables
