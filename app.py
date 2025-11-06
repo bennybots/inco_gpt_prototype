@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-# Drop-in replacement: keeps your extractor + adds Summary of Approval (email style),
-# supply-chain diagram, real dispute chat, mandatory About Us, fixed deliverables,
-# and added fields (legal addresses, employees/roles).
+# --- Drop-in replacement: form-first UX + preview-on-click + deliverable picker ---
 
 # --- imports & env ---
-import os, json, requests, datetime as dt, re, random
+import os, json, requests, datetime as dt, re, random, pathlib
 from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
@@ -34,15 +32,15 @@ class CaseFacts:
     # Legal entities
     full_legal_name_1: str = ""
     full_legal_name_2: str = ""
-    entity1_address: str = ""      # NEW
-    entity2_address: str = ""      # NEW
+    entity1_address: str = ""
+    entity2_address: str = ""
 
     # Jurisdictions
     countries_of_incorp: List[str] = field(default_factory=list)
 
     # People / roles
-    entity1_employees: Optional[int] = None   # NEW
-    entity2_employees: Optional[int] = None   # NEW
+    entity1_employees: Optional[int] = None
+    entity2_employees: Optional[int] = None
     entity1_roles: List[str] = field(default_factory=list)
     entity2_roles: List[str] = field(default_factory=list)
 
@@ -201,13 +199,11 @@ def fetch_site_text(url: str, timeout=12) -> str:
         return ""
 
 def enrich_company_context(base_url: str, about_text: str) -> str:
-    """Pull from multiple high-signal sources, dedupe, return compact text."""
     max_pages = int(os.getenv("ENRICH_MAX_PAGES", "6"))
     seeds = []
     if base_url:
         base = normalize_url(base_url)
         seeds += [base, base + "/about", base + "/about-us", base + "/company", base + "/who-we-are"]
-    # fetch with caps
     texts, used_sources, snips = [], [], {}
     for u in (seeds)[:max_pages]:
         try:
@@ -257,27 +253,58 @@ def _fmt(v):
         return "\n".join([f"- {x}" for x in v]) or "—"
     return v if (isinstance(v, str) and v.strip()) else "—"
 
+# =======================
+# Diagram edit assistant
+# =======================
 DIAGRAM_EDIT_SYSTEM = (
     "You are a structured editor for a simple 2-box supply-chain diagram.\n"
     "Given the current facts and the user's note, output JSON ONLY with any of:\n"
     "{"
-    "  'entity1_name': <str>,        # new name for Entity 1\n"
-    "  'entity2_name': <str>,        # new name for Entity 2\n"
-    "  'flow_label': <str>,          # text shown on the arrow\n"
-    "  'direction': 'E1->E2'|'E2->E1' # optional; default E1->E2\n"
+    "  'entity1_name': <str>,"
+    "  'entity2_name': <str>,"
+    "  'flow_label': <str>,"
+    "  'direction': 'E1->E2'|'E2->E1'"
     "}\n"
     "Keep changes minimal. Do not invent entities beyond two. If unclear, return {}."
 )
 
+# =======================
+# LLM helpers
+# =======================
+class LLM:
+    def __init__(self):
+        key = os.getenv("OPENAI_API_KEY", "")
+        if not key:
+            st.warning("OPENAI_API_KEY missing in .env")
+        self.client = OpenAI(api_key=key)
+        self.model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+        self.temperature = float(os.getenv("OPENAI_TEMP", "0.1"))
+        self.top_p = float(os.getenv("OPENAI_TOP_P", "1"))
+        self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "1200"))
+
+    def json(self, system: str, user: str) -> dict:
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=self.max_tokens,
+        )
+        txt = resp.choices[0].message.content
+        try:
+            return json.loads(txt)
+        except Exception:
+            return {"raw": txt}
+
 def propose_diagram_update(llm: LLM, user_msg: str, facts: CaseFacts) -> dict:
-    payload = {
-        "current_facts": asdict(facts),
-        "instruction": user_msg
-    }
+    payload = {"current_facts": asdict(facts), "instruction": user_msg}
     return llm.json(DIAGRAM_EDIT_SYSTEM, json.dumps(payload, ensure_ascii=False))
 
 def apply_diagram_edits(facts: CaseFacts, edits: dict) -> CaseFacts:
-    # clone current
     f = CaseFacts(**asdict(facts))
     if edits.get("entity1_name"):
         f.full_legal_name_1 = edits["entity1_name"].strip()
@@ -285,38 +312,61 @@ def apply_diagram_edits(facts: CaseFacts, edits: dict) -> CaseFacts:
         f.full_legal_name_2 = edits["entity2_name"].strip()
     if edits.get("flow_label"):
         f.transaction_flows = edits["flow_label"].strip()
-    # encode arrow direction inside the label for now
     if edits.get("direction") == "E2->E1":
         f.transaction_flows = (f.transaction_flows or "Goods/Services/IP") + "  (E2 → E1)"
     return f
 
-
 # =======================
 # Visualization & explainers
 # =======================
-# --- replace your current function with this ---
 def supply_chain_dot(f: CaseFacts) -> str:
-    from graphviz import Digraph  # local import to avoid any import timing weirdness
+    from graphviz import Digraph  # local import
     g = Digraph("supply_chain", format="svg")
     g.attr(rankdir="LR", bgcolor="transparent")
-
-    # high-contrast for dark themes
     g.attr('node', shape="box", style="rounded", color="white", fontcolor="white", penwidth="1.4")
     g.attr('edge', color="white", fontcolor="white", penwidth="1.4", arrowsize="0.8")
     g.attr('graph', color="white")
-
     e1 = f.full_legal_name_1 or "Entity 1"
     e2 = f.full_legal_name_2 or "Entity 2"
-    g.node("E1", e1)
-    g.node("E2", e2)
+    g.node("E1", e1); g.node("E2", e2)
     flow = (f.transaction_flows or "Goods/Services/IP").replace("\n"," ")
     g.edge("E1", "E2", label=flow)
-
     return g.source
 
+TRANSACTION_TYPES = [
+    "Ecommerce Resale (LRD)",
+    "Wholesale Resale (LRD)",
+    "Services (Cost Plus)",
+    "IP Licensing (Royalty)",
+    "Contract Manufacturing",
+    "Commissionaire / Agency",
+    "Financing / Intercompany Loans",
+]
 
+CLASSIFY_SYSTEM = "You are a senior transfer pricing advisor. Classify the intercompany transaction into exactly one of the allowed labels."
 
+def classify_transaction(llm: LLM, facts: dict) -> dict:
+    allowed = ", ".join(TRANSACTION_TYPES)
+    user = (
+        "Facts as JSON (from extractor):\n"
+        + json.dumps(facts, ensure_ascii=False)
+        + f"\n\nReturn JSON with fields: transaction_type (one of [{allowed}]), "
+          "confidence (0-1), short_rationale (string)."
+    )
+    return llm.json(CLASSIFY_SYSTEM, user)
 
+ERAN_ASSISTANT_SYSTEM = (
+    "You are Eran, a senior transfer pricing advisor. Be concise, practical, and clear. "
+    "The user is disputing the recommended model/summary. "
+    "Decide among: (1) 'update' (provide JSON with minimal field edits to facts), "
+    "(2) 'escalate' (too complex; ask to speak with Eran), or (3) 'disagree'. "
+    "Return JSON with keys: action ('update'|'escalate'|'disagree'), "
+    "message (short explanation to the client), and optional edits (object of field->newvalue)."
+)
+
+def process_dispute_turn(llm: LLM, user_msg: str, facts: CaseFacts) -> dict:
+    payload = {"current_facts": asdict(facts), "user_feedback": user_msg}
+    return llm.json(ERAN_ASSISTANT_SYSTEM, json.dumps(payload, ensure_ascii=False))
 
 def model_email_style_explainer(tx_type: str) -> str:
     t = (tx_type or "").lower()
@@ -351,75 +401,6 @@ def model_email_style_explainer(tx_type: str) -> str:
             "agent earns a commission.\n\n**Pros:** Local footprint without full distributor risks."
         )
     return "**Model:** Selected based on functions, assets, and risks provided."
-
-# =======================
-# LLM helpers (classification + dispute)
-# =======================
-class LLM:
-    def __init__(self):
-        key = os.getenv("OPENAI_API_KEY", "")
-        if not key:
-            st.warning("OPENAI_API_KEY missing in .env")
-        self.client = OpenAI(api_key=key)
-        self.model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-        self.temperature = float(os.getenv("OPENAI_TEMP", "0.1"))
-        self.top_p = float(os.getenv("OPENAI_TOP_P", "1"))
-        self.max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", "1200"))
-
-    def json(self, system: str, user: str) -> dict:
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=self.max_tokens,
-        )
-        txt = resp.choices[0].message.content
-        try:
-            return json.loads(txt)
-        except Exception:
-            return {"raw": txt}
-
-TRANSACTION_TYPES = [
-    "Ecommerce Resale (LRD)",
-    "Wholesale Resale (LRD)",
-    "Services (Cost Plus)",
-    "IP Licensing (Royalty)",
-    "Contract Manufacturing",
-    "Commissionaire / Agency",
-    "Financing / Intercompany Loans",
-]
-
-CLASSIFY_SYSTEM = (
-    "You are a senior transfer pricing advisor. Classify the intercompany transaction into exactly one of the allowed labels."
-)
-
-def classify_transaction(llm: LLM, facts: dict) -> dict:
-    allowed = ", ".join(TRANSACTION_TYPES)
-    user = (
-        "Facts as JSON (from extractor):\n"
-        + json.dumps(facts, ensure_ascii=False)
-        + f"\n\nReturn JSON with fields: transaction_type (one of [{allowed}]), "
-          "confidence (0-1), short_rationale (string)."
-    )
-    return llm.json(CLASSIFY_SYSTEM, user)
-
-ERAN_ASSISTANT_SYSTEM = (
-    "You are Eran, a senior transfer pricing advisor. Be concise, practical, and clear. "
-    "The user is disputing the recommended model/summary. "
-    "Decide among: (1) 'update' (provide JSON with minimal field edits to facts), "
-    "(2) 'escalate' (too complex; ask to speak with Eran), or (3) 'disagree'. "
-    "Return JSON with keys: action ('update'|'escalate'|'disagree'), "
-    "message (short explanation to the client), and optional edits (object of field->newvalue)."
-)
-
-def process_dispute_turn(llm: LLM, user_msg: str, facts: CaseFacts) -> dict:
-    payload = {"current_facts": asdict(facts), "user_feedback": user_msg}
-    return llm.json(ERAN_ASSISTANT_SYSTEM, json.dumps(payload, ensure_ascii=False))
 
 # =======================
 # Simple markdown templates
@@ -493,11 +474,8 @@ TPR_TMPL = """
 
 **Conclusion**
 {{ conclusion }}
-
 """
-# =======================
-# Eran Email Summary (exact style)
-# =======================
+
 ERAN_EMAIL_TMPL = """
 {% set is_lrd = 'resale' in tx_type.lower() or 'lrd' in tx_type.lower() %}
 {% set is_cp  = 'cost plus' in tx_type.lower() or 'services' in tx_type.lower() %}
@@ -561,12 +539,9 @@ Based on the classification and facts, apply the standard model documentation an
 - **Guidance Memo** — policy explaining methodology and controls. 
 """
 
-
 def render_eran_email_summary(facts: CaseFacts, tx_type: str, title: str = "Summary Email") -> str:
     tmpl = Template(ERAN_EMAIL_TMPL)
     return tmpl.render(f=facts, tx_type=tx_type or "TBD", title=title)
-
-
 
 def _render_docs(deliverables: list[str], ctx: dict) -> list[tuple[str, bytes]]:
     files = []
@@ -580,31 +555,33 @@ def _render_docs(deliverables: list[str], ctx: dict) -> list[tuple[str, bytes]]:
     return files
 
 # =======================
-# Session + Inputs
+# Session
 # =======================
 if "extracted" not in st.session_state:
     st.session_state.extracted = {}
 if "edited" not in st.session_state:
     st.session_state.edited = {}
+if "show_preview" not in st.session_state:
+    st.session_state.show_preview = False
+if "classification_cache" not in st.session_state:
+    st.session_state.classification_cache = None
 
+# =======================
+# Inputs (About + URL)
+# =======================
 st.markdown("**Paste the company’s ‘About Us’ (required).** The website URL is optional and used only to enrich.")
 about_text = st.text_area("About Us (required):", "", height=200)
 raw_url = st.text_input("Company website URL (optional, for enrichment):", "")
-deep_enrich = st.toggle(
-    "Deep enrichment (multi-source)",
-    value=True,
-    help="About page + internal pages (deduped)."
-)
+deep_enrich = st.toggle("Deep enrichment (multi-source)", value=True, help="About page + internal pages (deduped).")
 
 # =======================
-# Extract Button
+# Extract Button (no preview yet)
 # =======================
 extract_disabled = len((about_text or "").strip()) < 40
 if st.button("Extract company info", type="primary", disabled=extract_disabled):
     with st.spinner("Extracting…"):
         url = normalize_url(raw_url)
         source_text = about_text.strip()
-
         if deep_enrich and url:
             with st.spinner("Enriching context from multiple sources…"):
                 source_text = enrich_company_context(url, source_text)
@@ -612,9 +589,7 @@ if st.button("Extract company info", type="primary", disabled=extract_disabled):
             extra = fetch_extra_pages(url)
             if extra:
                 source_text = (source_text + "\n\n" + extra).strip()
-
         st.caption(f"Context length used: {len(source_text)} chars")
-
         try:
             extracted_obj = extract_from_chunk(source_text[:20000], url=url)
             st.session_state.extracted = extracted_obj.model_dump()
@@ -623,12 +598,17 @@ if st.button("Extract company info", type="primary", disabled=extract_disabled):
                 guess = guess_company_from_url(url)
                 if guess and not st.session_state.extracted.get("full_legal_name_1"):
                     st.session_state.extracted["full_legal_name_1"] = guess
+            # hide preview until user clicks the preview button
+            st.session_state.show_preview = False
+            st.session_state.classification_cache = None
         except Exception as e:
             st.error(f"Extraction failed: {e}")
             st.session_state.extracted = {}
+            st.session_state.show_preview = False
+            st.session_state.classification_cache = None
 
 # =======================
-# Review & Edit
+# Review & Edit (FORM ONLY)
 # =======================
 extracted = st.session_state.extracted
 
@@ -643,19 +623,10 @@ if extracted:
         <div style="
             border:1px solid #1f2b25;
             background: linear-gradient(135deg, #0c1110 0%, #111a17 100%);
-            padding:16px 18px;
-            border-radius:12px;
-            margin:12px 0 22px 0;
+            padding:16px 18px; border-radius:12px; margin:12px 0 22px 0;
             box-shadow: 0 0 18px rgba(0,0,0,0.35);
         ">
-            <div style="
-                font-weight:600;
-                color:#3bff95;
-                font-size:15px;
-                display:flex;
-                align-items:center;
-                gap:8px;
-            ">
+            <div style="font-weight:600;color:#3bff95;font-size:15px;display:flex;align-items:center;gap:8px;">
                 <span style="font-size:18px;">✔</span>
                 Review extracted fields — edit anything before generating advice
             </div>
@@ -678,7 +649,8 @@ if extracted:
             )
             entity1_employees = st.number_input(
                 "Entity 1 employees (approx.)",
-                min_value=0, max_value=100000, value=int(st.session_state.edited.get("entity1_employees", extracted.get("entity1_employees") or 0)), step=1,
+                min_value=0, max_value=100000,
+                value=int(st.session_state.edited.get("entity1_employees", extracted.get("entity1_employees") or 0)), step=1,
             )
             entity1_roles_txt = st.text_input(
                 "Entity 1 roles (comma-separated)",
@@ -688,7 +660,6 @@ if extracted:
                 "Countries of incorporation (comma-separated)",
                 value=st.session_state.edited.get("countries_of_incorp", _as_comma_list(extracted.get("countries_of_incorp",""))),
             )
-
         with colB:
             full_legal_name_2 = st.text_input(
                 "Entity 2 full legal name (Foreign/Related)",
@@ -701,7 +672,8 @@ if extracted:
             )
             entity2_employees = st.number_input(
                 "Entity 2 employees (approx.)",
-                min_value=0, max_value=100000, value=int(st.session_state.edited.get("entity2_employees", extracted.get("entity2_employees") or 0)), step=1,
+                min_value=0, max_value=100000,
+                value=int(st.session_state.edited.get("entity2_employees", extracted.get("entity2_employees") or 0)), step=1,
             )
             entity2_roles_txt = st.text_input(
                 "Entity 2 roles (comma-separated)",
@@ -730,21 +702,10 @@ if extracted:
         )
 
         options = ["TBD"] + TRANSACTION_TYPES
-
-        current_val = st.session_state.edited.get(
-            "recommended_model",
-            extracted.get("recommended_model", "TBD")
-        )
-
+        current_val = st.session_state.edited.get("recommended_model", extracted.get("recommended_model", "TBD"))
         if current_val not in options:
             current_val = "TBD"
-
-        recommended_model = st.selectbox(
-            "Recommended model",
-            options=options,
-            index=safe_index(current_val, options, default=0),
-        )
-
+        recommended_model = st.selectbox("Recommended model", options=options, index=safe_index(current_val, options, default=0))
         confidence = st.slider("Confidence", 0.0, 1.0, float(st.session_state.edited.get("confidence", extracted.get("confidence") or 0.7)), 0.05)
 
         left, mid, right = st.columns([1,1,2])
@@ -753,7 +714,7 @@ if extracted:
         with mid:
             reset_btn = st.form_submit_button("Reset to Extracted")
         with right:
-            st.caption("Saved edits are used in the summary & deliverables.")
+            generate_preview_clicked = st.form_submit_button("Generate advisory preview", type="primary")
 
     if submitted:
         st.session_state.edited = {
@@ -774,15 +735,23 @@ if extracted:
             "entity2_roles": [x.strip() for x in entity2_roles_txt.split(",") if x.strip()],
         }
         st.success("Edits saved.")
-        st.session_state.summary_agree = False
+        # hide preview until refreshed
+        st.session_state.show_preview = False
+        st.session_state.classification_cache = None
 
     if "reset_btn" in locals() and reset_btn:
         st.session_state.dispute_mode = False
         st.session_state.summary_agree = False
         st.session_state.edited = {}
+        st.session_state.show_preview = False
+        st.session_state.classification_cache = None
         st.info("Edits cleared — reverted to extracted values.")
 
-# ---------- formatting + dispute helpers ----------
+    if "generate_preview_clicked" in locals() and generate_preview_clicked:
+        st.session_state.show_preview = True
+        st.session_state.summary_agree = False   # must reconfirm on each preview
+
+# ---------- formatting helper ----------
 def format_key_facts_md(f: CaseFacts) -> str:
     bullets = []
     if f.full_legal_name_1: bullets.append(f"- **Entity 1 (Home):** {f.full_legal_name_1}")
@@ -801,20 +770,23 @@ def format_key_facts_md(f: CaseFacts) -> str:
     return "\n".join(bullets)
 
 # =======================
-# Summary for approval
+# PREVIEW (only after click)
 # =======================
-if extracted:
-    st.subheader("Summary for approval")
+if extracted and st.session_state.show_preview:
+    st.subheader("Advisory preview")
 
-    # Merge extracted + any edited values into one set of facts
+    # Merge facts
     facts = _merge_facts(st.session_state.extracted, st.session_state.edited)
 
-    # Classify on merged facts to get recommendation + rationale
-    llm = LLM()
-    if not os.getenv("OPENAI_API_KEY"):
-        st.error("Missing OPENAI_API_KEY in .env — cannot classify. Add the key and rerun.")
-        st.stop()
-    cls_summary = classify_transaction(llm, asdict(facts))
+    # Classify only when previewing (cache per preview)
+    if st.session_state.classification_cache is None:
+        if not os.getenv("OPENAI_API_KEY"):
+            st.error("Missing OPENAI_API_KEY in .env — cannot classify. Add the key and rerun.")
+            st.stop()
+        llm = LLM()
+        st.session_state.classification_cache = classify_transaction(llm, asdict(facts))
+    cls = st.session_state.classification_cache
+    tx_type = cls.get("transaction_type") or facts.recommended_model or "TBD"
 
     # Supply chain diagram
     st.markdown("#### Visualize supply chain (confirm)")
@@ -828,39 +800,26 @@ if extracted:
     with cols[0]:
         st.checkbox("I confirm the supply chain diagram is correct.", key="confirm_diagram")
     with cols[1]:
-        open_edit = st.button("This diagram is wrong")
+        open_edit = st.button("This diagram is wrong", key="diagram_wrong_btn")
 
-    # simple chat lane for diagram fixes
+    # mini chat to fix diagram
     if open_edit or st.session_state.get("diagram_edit_open"):
         st.session_state.diagram_edit_open = True
         st.divider()
         st.subheader("Adjust the diagram")
-
         if "diagram_chat" not in st.session_state:
             st.session_state.diagram_chat = []
-
         for role, msg in st.session_state.diagram_chat[-6:]:
             st.chat_message(role).markdown(msg)
-
-        user_msg = st.chat_input(
-            "Describe what to change (names, flow text, or direction).",
-            key="diagram_chat_input"     # UNIQUE KEY
-        )
+        user_msg = st.chat_input("Describe what to change (names, flow text, or direction).", key="diagram_chat_input")
         if user_msg:
             st.session_state.diagram_chat.append(("user", user_msg))
             with st.chat_message("assistant"):
                 llm = LLM()
                 edits = propose_diagram_update(llm, user_msg, facts) or {}
-
-                preview = (
-                    "Proposed edits:\n" +
-                    "\n".join(f"- **{k}** → {v}" for k, v in edits.items())
-                    if edits else "I couldn't infer a clear change. Please be more specific."
-                )
+                preview = ("Proposed edits:\n" + "\n".join(f"- **{k}** → {v}" for k, v in edits.items())) if edits else "I couldn't infer a clear change. Please be more specific."
                 st.markdown(preview)
-
                 if edits:
-                    # apply changes and persist in edited state
                     new_facts = apply_diagram_edits(facts, edits)
                     st.session_state.edited.update({
                         "full_legal_name_1": new_facts.full_legal_name_1,
@@ -870,15 +829,16 @@ if extracted:
                     st.success("Updated. Re-rendering diagram…")
                     st.session_state.diagram_chat.append(("assistant", preview))
                     st.session_state.confirm_diagram = False
+                    # refresh classification on change
+                    st.session_state.classification_cache = None
                     st.rerun()
                 else:
                     st.session_state.diagram_chat.append(("assistant", preview))
 
-    # Key facts
+    # Main facts + summary agree/dispute
     st.markdown("#### Main facts used")
     st.markdown(format_key_facts_md(facts))
 
-    # Agree / Disagree with working chat
     col_agree, col_disagree = st.columns([1, 1])
     with col_agree:
         st.session_state.summary_agree = st.checkbox(
@@ -886,37 +846,31 @@ if extracted:
             value=st.session_state.get("summary_agree", False),
         )
     with col_disagree:
-        if st.button("I do not agree with this summary"):
+        if st.button("I do not agree with this summary", key="dispute_btn"):
             st.session_state.dispute_mode = True
 
-    # Chat mode if disputed
     if st.session_state.get("dispute_mode"):
         st.divider()
         st.subheader("Discuss with advisor (chat)")
         if "chat" not in st.session_state:
             st.session_state.chat = []
-
         for role, msg in st.session_state.chat:
             st.chat_message(role).markdown(msg)
-
-        user_msg2 = st.chat_input(
-            "Tell us what’s off — we’ll adjust or escalate to Eran.",
-            key="dispute_chat_input"     # UNIQUE KEY
-        )
+        user_msg2 = st.chat_input("Tell us what’s off — we’ll adjust or escalate to Eran.", key="dispute_chat_input")
         if user_msg2:
             st.session_state.chat.append(("user", user_msg2))
             st.chat_message("user").markdown(user_msg2)
-
             with st.chat_message("assistant"):
+                llm = LLM()
                 resp = process_dispute_turn(llm, user_msg2, facts)
                 st.session_state.chat.append(("assistant", resp.get("message", "")))
                 st.markdown(resp.get("message", ""))
-
                 action = resp.get("action", "")
                 if action == "update" and isinstance(resp.get("edits"), dict):
                     st.session_state.edited.update(resp["edits"])
-                    st.success("Updated facts based on your notes. Refreshing the summary…")
+                    st.success("Updated facts based on your notes. Refreshing the preview…")
                     st.session_state.summary_agree = False
+                    st.session_state.classification_cache = None
                     st.session_state.dispute_mode = False
                     st.rerun()
                 elif action == "escalate":
@@ -924,36 +878,42 @@ if extracted:
                 else:
                     st.info("Noted. If you still have concerns, please speak with Eran.")
 
+    # Render a quick advisory summary preview (email-style content)
+    st.markdown("#### Advisory summary (email style)")
+    reason = cls.get("short_rationale") or "Based on provided facts."
+    st.caption(f"Classification confidence: {cls.get('confidence')}")
+    st.markdown(render_eran_email_summary(facts, tx_type, title="Summary for Approval"))
+    st.markdown(f"**Strategic Recommendation Summary:**\n\n{reason}")
 
-# =======================
-# Deliverables
-# =======================
-def choose_deliverables(_: None = None) -> list[str]:
-    # Per Eran: all users are first-time implementations; no full long report.
-    return ["Intercompany Agreement", "Guidance Memo"]
+    # =======================
+    # Deliverables Picker (after preview & confirmation)
+    # =======================
+    st.divider()
+    st.subheader("Would you like me to generate the documents?")
+    st.caption("Per Eran, most first-time cases use Intercompany Agreement + Guidance Memo. A full Transfer Pricing Report is optional.")
 
-if extracted:
-    st.subheader("Deliverables")
-    can_generate = bool(st.session_state.get("summary_agree", False))
+    default_ic = True
+    default_memo = True
+    default_tpr = False
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        want_ic = st.checkbox("Intercompany Agreement", value=default_ic)
+    with col2:
+        want_memo = st.checkbox("Guidance Memo", value=default_memo)
+    with col3:
+        want_tpr = st.checkbox("Transfer Pricing Report (optional)", value=default_tpr)
 
-    if st.button("Generate advisory", type="secondary", disabled=not can_generate):
-        llm = LLM()
-        if not os.getenv("OPENAI_API_KEY"):
-            st.error("Missing OPENAI_API_KEY in .env — cannot classify. Add the key and rerun.")
-            st.stop()
-        with st.spinner("Classifying transaction & choosing deliverables…"):
-            facts_for_llm = {**st.session_state.extracted, **st.session_state.edited}
-            cls = classify_transaction(llm, facts_for_llm)
-            tx_type = cls.get("transaction_type") or facts_for_llm.get("recommended_model") or "TBD"
-            deliverables = choose_deliverables()
+    can_generate_docs = st.session_state.get("summary_agree", False) and (want_ic or want_memo or want_tpr)
+    if st.button("Generate documents", type="secondary", disabled=not can_generate_docs):
+        deliverables = []
+        if want_ic: deliverables.append("Intercompany Agreement")
+        if want_memo: deliverables.append("Guidance Memo")
+        if want_tpr: deliverables.append("Transfer Pricing Report")
 
-        st.success(f"Transaction: {tx_type} — Deliverables: {', '.join(deliverables)}")
-        st.json(cls)
-
-        company_name = st.session_state.edited.get("full_legal_name_1") or extracted.get("full_legal_name_1") or "ClientCo"
-        scope = st.session_state.edited.get("business_model") or extracted.get("business_model") or "Define scope of goods/services/IP."
-        pricing = st.session_state.edited.get("transaction_flows") or extracted.get("transaction_flows") or "Cost Plus X% / Resale Margin / Royalty % (to confirm)."
-        far = st.session_state.edited.get("role") or extracted.get("role") or "Headline FAR: key functions, assets, risks."
+        company_name = facts.full_legal_name_1 or "ClientCo"
+        scope = facts.business_model or "Define scope of goods/services/IP."
+        pricing = facts.transaction_flows or "Cost Plus X% / Resale Margin / Royalty % (to confirm)."
+        far = facts.role or "Headline FAR: key functions, assets, risks."
 
         ctx = {
             "parties": f"{company_name} and Related Party",
@@ -977,15 +937,8 @@ if extracted:
 
         files = _render_docs(deliverables, ctx)
 
-        # ----- Advisory Summary (client-facing) -----
-        facts = _merge_facts(st.session_state.extracted, st.session_state.edited)
-        reason = cls.get("short_rationale") or "Based on provided facts."
-        req_docs = [
-            "- Intercompany Agreement: outlines scope, pricing method, and responsibilities.",
-            "- Guidance Memo: policy note explaining methodology and controls.",
-        ]
-
-        doc_md = f"""# Advisory Summary
+        # lightweight client-facing advisory summary file
+        advisory_md = f"""# Advisory Summary
 
 **Client:** {facts.full_legal_name_1 or "ClientCo"}  
 **Counterparty:** {facts.full_legal_name_2 or "RelatedCo"}  
@@ -1004,45 +957,29 @@ if extracted:
 ## Strategic Recommendation Summary
 {reason}
 
-### Pros of this model
-{os.linesep.join(["- "+p for p in model_email_style_explainer(tx_type).split("**Pros:**")[-1].strip().splitlines() if p and not p.startswith("**")])}
-
 ### Required documents
-{os.linesep.join(req_docs)}
+{os.linesep.join(['- '+d for d in deliverables])}
 
 ## Main facts (from your inputs)
 {format_key_facts_md(facts)}
 
-## What I still need
-- Org chart, entity registrations & addresses (confirmed)
-- Employees, roles by entity (confirmed)
-- Financials / margins by function
-- Contracts (if any)
-- Benchmarks (we will attach)
-
 ## Next Steps
 1. Confirm this summary (or flag anything that looks off).
-2. Provide the items listed under “What I still need.”
-3. We will produce the intercompany agreement and guidance memo for review.
+2. Provide org chart, registrations, addresses, employees & roles, and financials.
+3. We will finalize the selected document(s) above.
 """
-
         st.download_button(
             "Download Advisory_Summary.md",
-            data=doc_md.encode("utf-8"),
+            data=advisory_md.encode("utf-8"),
             file_name="Advisory_Summary.md",
             mime="text/markdown",
         )
 
-        # ----- Save case log -----
-        import pathlib, datetime as _dt
+        # Save case log
         case_dir = pathlib.Path("knowledge/cases")
         case_dir.mkdir(parents=True, exist_ok=True)
-        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        case_payload = {
-            "facts": asdict(facts),
-            "classification": cls,
-            "advisory_md": doc_md,
-        }
+        ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        case_payload = {"facts": asdict(facts), "classification": cls, "advisory_md": advisory_md}
         case_path = case_dir / f"CASE_{ts}.json"
         with open(case_path, "w", encoding="utf-8") as f:
             json.dump(case_payload, f, ensure_ascii=False, indent=2)
@@ -1050,20 +987,4 @@ if extracted:
 
         st.subheader("Downloads")
         for name, data in files:
-            if name.startswith("TP_Report_"):
-                # Not offering TPR by default per Eran; keep generated file available if needed.
-                continue
             st.download_button(label=f"Download {name}", data=data, file_name=name, mime="text/markdown")
-
-# =======================
-# NOTE: Removed deprecated <12 months> branching. Deliverables fixed.
-# =======================
-
-# --------------------- requirements.txt hint ---------------------
-# streamlit>=1.36
-# openai>=1.51
-# requests>=2.32
-# beautifulsoup4>=4.12
-# jinja2>=3.1
-# python-dotenv>=1.0
-# graphviz>=0.20
