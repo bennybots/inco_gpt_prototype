@@ -1,4 +1,4 @@
-# app.py — Incodox GPT
+# app.py — Incodox GPT (updated per Eran's feedback)
 # Drop-in replacement: keeps your extractor + adds Summary of Approval (email style),
 # supply-chain diagram, real dispute chat, mandatory About Us, fixed deliverables,
 # and added fields (legal addresses, employees/roles).
@@ -12,7 +12,6 @@ from typing import List, Optional
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import streamlit as st
-from graphviz import Digraph
 from dataclasses import dataclass, asdict, field
 from jinja2 import Template
 
@@ -254,16 +253,13 @@ def _fmt(v):
 # =======================
 # Visualization & explainers
 # =======================
-def supply_chain_dot(f: CaseFacts) -> Digraph:
-    g = Digraph("supply_chain", format="svg")
-    g.attr(rankdir="LR", bgcolor="transparent")
-    e1 = f.full_legal_name_1 or "Entity 1"
-    e2 = f.full_legal_name_2 or "Entity 2"
-    g.node("E1", e1, shape="box", style="rounded")
-    g.node("E2", e2, shape="box", style="rounded")
-    flow = (f.transaction_flows or "Goods/Services/IP").replace("\n"," ")
-    g.edge("E1", "E2", label=flow)
-    return g
+def supply_chain_dot(f: CaseFacts) -> str:
+    e1 = (f.full_legal_name_1 or "Entity 1").replace('"', "'")
+    e2 = (f.full_legal_name_2 or "Entity 2").replace('"', "'")
+    flow = (f.transaction_flows or "Goods/Services/IP").replace("\n", " ").replace('"', "'")
+    return f'digraph {{ rankdir=LR; bgcolor="transparent"; node [shape=box, style=rounded]; ' \
+           f'E1 [label="{e1}"]; E2 [label="{e2}"]; E1 -> E2 [label="{flow}"]; }}'
+
 
 def model_email_style_explainer(tx_type: str) -> str:
     t = (tx_type or "").lower()
@@ -761,8 +757,8 @@ if extracted:
     # Supply chain diagram
     st.markdown("#### Visualize supply chain (confirm)")
     try:
-        g = supply_chain_dot(facts)
-        st.graphviz_chart(g.source)
+        dot = supply_chain_dot(facts)
+        st.graphviz_chart(dot)
     except Exception:
         st.info("Supply chain diagram unavailable — fill entity names and flows.")
     st.checkbox("I confirm the supply chain diagram is correct.", key="confirm_diagram")
