@@ -952,7 +952,7 @@ if extracted and st.session_state.show_preview:
     elif "services" in _alias or "cost plus" in _alias:
         tx_type = "Services (Cost Plus)"
 
-    st.markdown("#### Summary of Approval (Eran-style)")
+    st.markdown("#### Summary of Approval")
     st.caption(f"Classification confidence: {cls.get('confidence')}")
     st.markdown(
         render_eran_email_summary(facts, tx_type, title="Summary for Approval")
