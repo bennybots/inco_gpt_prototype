@@ -367,6 +367,101 @@ ERAN_ASSISTANT_SYSTEM = (
 def process_dispute_turn(llm: LLM, user_msg: str, facts: CaseFacts) -> dict:
     payload = {"current_facts": asdict(facts), "user_feedback": user_msg}
     return llm.json(ERAN_ASSISTANT_SYSTEM, json.dumps(payload, ensure_ascii=False))
+# =======================
+# Deliverables logic (Eran-style + LLM check)
+# =======================
+def _bool(v) -> bool:
+    return bool(v) and str(v).strip().lower() not in {"0", "none", "n/a", "na", "-"}
+
+def _num(v, default=0):
+    try:
+        return int(v)
+    except Exception:
+        try:
+            return float(v)
+        except Exception:
+            return default
+
+DELIV_RULES_DOC = """
+You are a transfer pricing assistant channeling Eran's email-summary pattern.
+Choose deliverables based on these ideas:
+
+- Intercompany Agreement (IC): forward-looking implementation of a TP model for ongoing dealings (LRD resale, Cost-Plus services, Commissionaire, Contract Mfg). Especially for first-time setups. Often paired with a short Guidance Memo.
+- Guidance Memo: concise policy write-up explaining the model, pricing mechanics, true-up logic, responsibilities, and controls. Used for quick onboarding or when full Local/Master File not (yet) required.
+- Transfer Pricing Report (TPR): retrospective documentation to defend prior or current fiscal year, meet Local/Master File requirements, or handle audit/controversy; more likely when materiality is high, multi-country footprint, IP licensing/royalty, financing/loans, or historical exposure exists.
+
+Signals:
+- If facts imply new/first-time implementation → IC + Guidance Memo.
+- If there’s historical activity (already trading last FY), audit flags, multi-jurisdictions, royalties, or financing → include TPR.
+- If confidence is low or facts are thin → include Guidance Memo even if IC is selected, and propose discovery.
+- If transaction is purely policy (shared services with small footprint) → Guidance Memo alone can be enough, but IC is still common if there’s a recurring related-party payment.
+"""
+
+def choose_deliverables_smart(facts: CaseFacts, cls: dict, llm: LLM | None = None) -> tuple[list[str], str]:
+    """
+    Returns (deliverables, rationale_text).
+    Heuristics first, then optional LLM nudge. Never removes IC+Memo if clearly indicated.
+    """
+    tx = (cls.get("transaction_type") or facts.recommended_model or "").lower()
+    conf_raw = cls.get("confidence")
+    try:
+        conf = float(conf_raw)
+    except Exception:
+        conf = 0.7
+
+    multi_country = len(facts.countries_of_incorp) >= 2
+    has_ip = bool(facts.ip_assets)
+    employees_total = (facts.entity1_employees or 0) + (facts.entity2_employees or 0)
+    flows = (facts.transaction_flows or "").lower()
+    roles = (facts.role or "").lower()
+
+    looks_new_setup = (not flows or "tbd" in flows) and employees_total <= 25
+    likely_historical = any(k in flows for k in ["invoice", "sold", "true-up", "prior", "fy20"])
+    risky_types = any(k in tx for k in ["licensing", "royalty", "financing", "loan"])
+    clear_operational = any(k in tx for k in ["resale", "lrd", "services", "commissionaire", "contract manufacturing"])
+
+    deliverables = set()
+    rationale = []
+
+    if clear_operational:
+        deliverables |= {"Intercompany Agreement", "Guidance Memo"}
+        rationale.append("Operational related-party dealings → IC + Memo for policy clarity.")
+
+    if looks_new_setup and clear_operational:
+        rationale.append("Likely first-time implementation → IC + Memo instead of full TPR.")
+
+    if multi_country or risky_types or has_ip or likely_historical:
+        deliverables.add("Transfer Pricing Report")
+        rationale.append("Multi-country/IP/financing or historical exposure → add TPR for defensibility.")
+
+    if conf < 0.55:
+        deliverables.add("Guidance Memo")
+        rationale.append("Low model confidence → include Memo to document assumptions.")
+
+    if not deliverables:
+        deliverables = {"Intercompany Agreement", "Guidance Memo"}
+        rationale.append("Default fallback → IC + Memo.")
+
+    if llm:
+        llm_payload = {
+            "facts": asdict(facts),
+            "classification": cls,
+            "current_choice": sorted(deliverables),
+        }
+        try:
+            llm_out = llm.json(DELIV_RULES_DOC, json.dumps(llm_payload, ensure_ascii=False))
+            llm_choice = llm_out.get("deliverables") or llm_out.get("choice") or []
+            if isinstance(llm_choice, list):
+                merged = set(deliverables) | set(llm_choice)
+                if clear_operational:
+                    merged |= {"Intercompany Agreement", "Guidance Memo"}
+                deliverables = merged
+                if llm_out.get("rationale"):
+                    rationale.append(f"LLM check: {llm_out['rationale']}")
+        except Exception:
+            pass
+
+    return sorted(deliverables), " ".join(rationale) or "Based on operational profile and risk signals."
 
 def model_email_style_explainer(tx_type: str) -> str:
     t = (tx_type or "").lower()
@@ -787,6 +882,11 @@ if extracted and st.session_state.show_preview:
         st.session_state.classification_cache = classify_transaction(llm, asdict(facts))
     cls = st.session_state.classification_cache
     tx_type = cls.get("transaction_type") or facts.recommended_model or "TBD"
+    # Smart deliverables prediction (Eran-style)
+    pred_deliverables, deliv_rationale = choose_deliverables_smart(facts, cls, llm=LLM())
+    st.markdown("#### Predicted deliverables")
+    st.write(", ".join(pred_deliverables))
+    st.caption(deliv_rationale)
 
     # Supply chain diagram
     st.markdown("#### Visualize supply chain (confirm)")
@@ -892,9 +992,11 @@ if extracted and st.session_state.show_preview:
     st.subheader("Would you like me to generate the documents?")
     st.caption("Per Eran, most first-time cases use Intercompany Agreement + Guidance Memo. A full Transfer Pricing Report is optional.")
 
-    default_ic = True
-    default_memo = True
-    default_tpr = False
+    default_ic   = "Intercompany Agreement" in pred_deliverables
+    default_memo = "Guidance Memo" in pred_deliverables
+    default_tpr  = "Transfer Pricing Report" in pred_deliverables
+
+
     col1, col2, col3 = st.columns(3)
     with col1:
         want_ic = st.checkbox("Intercompany Agreement", value=default_ic)
