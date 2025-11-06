@@ -102,6 +102,12 @@ def _parse_basic_html(html: str) -> str:
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     return " ".join([title] + metas + [body_txt]).strip()
 
+def safe_index(value, options, default=0):
+    try:
+        return options.index(value)
+    except Exception:
+        return default
+
 def fetch_text_any(url: str, timeout: int = None) -> str:
     if not url: return ""
     timeout = timeout or int(os.getenv("ENRICH_TIMEOUT", "12"))
@@ -253,12 +259,35 @@ def _fmt(v):
 # =======================
 # Visualization & explainers
 # =======================
-def supply_chain_dot(f: CaseFacts) -> str:
-    e1 = (f.full_legal_name_1 or "Entity 1").replace('"', "'")
-    e2 = (f.full_legal_name_2 or "Entity 2").replace('"', "'")
-    flow = (f.transaction_flows or "Goods/Services/IP").replace("\n", " ").replace('"', "'")
-    return f'digraph {{ rankdir=LR; bgcolor="transparent"; node [shape=box, style=rounded]; ' \
-           f'E1 [label="{e1}"]; E2 [label="{e2}"]; E1 -> E2 [label="{flow}"]; }}'
+def supply_chain_dot(f: CaseFacts) -> Digraph:
+    g = Digraph("supply_chain", format="svg")
+
+    # layout direction + transparent background
+    g.attr(rankdir="LR", bgcolor="transparent")
+
+    # use white text and edges for dark mode
+    g.attr(
+        "node",
+        shape="box",
+        style="rounded,filled",
+        fillcolor="#1e1e1e",
+        color="white",
+        fontcolor="white",
+        penwidth="1.8",
+    )
+    g.attr("edge", color="white", fontcolor="white", penwidth="1.6")
+
+    e1 = f.full_legal_name_1 or "Entity 1"
+    e2 = f.full_legal_name_2 or "Entity 2"
+    flow = (f.transaction_flows or "Goods/Services/IP").replace("\n", " ")
+
+    g.node("E1", e1)
+    g.node("E2", e2)
+    g.edge("E1", "E2", label=flow)
+
+    return g
+
+
 
 
 def model_email_style_explainer(tx_type: str) -> str:
@@ -673,16 +702,21 @@ if extracted:
         )
 
         options = ["TBD"] + TRANSACTION_TYPES
+
+        current_val = st.session_state.edited.get(
+            "recommended_model",
+            extracted.get("recommended_model", "TBD")
+        )
+
+        if current_val not in options:
+            current_val = "TBD"
+
         recommended_model = st.selectbox(
             "Recommended model",
             options=options,
-            index=options.index(
-                st.session_state.edited.get(
-                    "recommended_model",
-                    extracted.get("recommended_model","TBD") if extracted.get("recommended_model","TBD") in options else "TBD"
-                )
-            ),
+            index=safe_index(current_val, options, default=0),
         )
+
         confidence = st.slider("Confidence", 0.0, 1.0, float(st.session_state.edited.get("confidence", extracted.get("confidence") or 0.7)), 0.05)
 
         left, mid, right = st.columns([1,1,2])
