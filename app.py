@@ -924,8 +924,6 @@ def format_key_facts_md(f: CaseFacts) -> str:
 # PREVIEW (only after click)
 # =======================
 if extracted and st.session_state.show_preview:
-    st.subheader("Advisory preview")
-
     # Merge facts
     facts = _merge_facts(st.session_state.extracted, st.session_state.edited)
 
@@ -952,7 +950,6 @@ if extracted and st.session_state.show_preview:
     elif "services" in _alias or "cost plus" in _alias:
         tx_type = "Services (Cost Plus)"
 
-    st.markdown("#### Summary of Approval")
     st.caption(f"Classification confidence: {cls.get('confidence')}")
     st.markdown(
         render_eran_email_summary(facts, tx_type, title="Summary for Approval")
