@@ -572,8 +572,11 @@ TPR_TMPL = """
 """
 
 ERAN_EMAIL_TMPL = """
-{% set is_lrd = 'resale' in tx_type.lower() or 'lrd' in tx_type.lower() %}
-{% set is_cp  = 'cost plus' in tx_type.lower() or 'services' in tx_type.lower() %}
+{% set t = (tx_type or '').lower() %}
+{% set is_lrd = 'resale' in t or 'lrd' in t %}
+{% set is_cp  = 'cost plus' in t or 'services' in t %}
+{% set is_lic = 'licensing' in t or 'royalty' in t %}
+{% set is_com = 'commissionaire' in t or 'agency' in t %}
 
 # {{ title or "Summary" }}
 
@@ -590,49 +593,101 @@ ERAN_EMAIL_TMPL = """
 - Current channels / flows: {{ f.transaction_flows or "—" }}
 
 {% if is_lrd %}
-## What is the LRD and how it works
-Target the distributor ({{ f.full_legal_name_2 or "the US entity" }}) with a fixed **operating profit margin** (profit before interest and tax, as % of sales).  
-The **intercompany transaction** (cost of purchased goods/solutions from {{ f.full_legal_name_1 or "HQ" }}) is a **plug number** that yields, at year-end, the predetermined margin that is benchmarked to comparable independent companies.  
-If {{ f.full_legal_name_2 or "the distributor" }} falls within the benchmark range, the price is **arm’s length** (compliance met).
+## How the LRD (Distributor) model works
+Target the distributor ({{ f.full_legal_name_2 or "the local entity" }}) with a fixed **operating profit margin** (PBIT as % of sales).  
+The **intercompany purchase price** from {{ f.full_legal_name_1 or "HQ" }} is the **plug** so year-end margin hits the benchmarked % range.
 
-### Invoicing
-Transfer pricing is assessed on an **annual** basis (aligned to the tax return). Operationally, invoice like you would a very **large client** (significant discounts) and make **periodic intercompany adjustments** (monthly/quarterly) so the distributor’s operating margin aligns to the determined margin.
-
-### Example of how the LRD works
-
-| {{ f.full_legal_name_2 or "Inc" }} | $ | Notes |
+### Example
+| {{ f.full_legal_name_2 or "Distributor" }} | $ | Notes |
 |---|---:|---|
-| Sales | 1,000 | Sales to local clients |
-| Cost of Goods | (???) | Intercompany “plug” so OP margin hits the fixed % |
-| Operating Expenses | (300) | Admin, salaries, rent |
-| **Operating Profit (PBIT)** | **30** | If fixed margin is **3%**, OP = 1,000 × 3% = 30 → COGS = 1,000 − 300 − 30 = **670**. If {{ f.full_legal_name_1 or "HQ" }} invoiced only 150 during the year, issue an intercompany **adjustment** for **520**. |
+| Sales | 1,000 | Local third-party sales |
+| COGS (from HQ) | (???) | Plug so margin hits target |
+| Opex | (300) | Salaries, rent, admin |
+| **Operating Profit (PBIT)** | **30** | If target **3%**, OP = 30 ⇒ COGS = 1,000 − 300 − 30 = **670**. If HQ invoiced 150 during the year, book a **true-up** of **520**. |
 
-### Pros of the LRD model
-- In growth periods, the distributor keeps a **low, fixed** profit — more profit is allocated to {{ f.full_legal_name_1 or "HQ" }}.  
-- **No WHT** on cross-border **business** transactions in many jurisdictions vs. dividends/interest.  
-- Aligns with facts: distributor has **no HQ/IP/R&D** and limited risks.  
-- **Common** and simple to execute/monitor with **quarterly** true-ups.
-
-{% elif is_cp %}
-## Proposed Transfer Pricing approach – what should be the arm’s-length fee?
-Characterize {{ f.full_legal_name_2 or "the service entity" }} as a **low-risk service provider**, compensated on a **Cost-Plus** basis.
-
-### Costs & markup
-- Costs typically include direct items (e.g., transaction fees, local accounting, regulatory fees); **exclude** items not incurred (no employees/rent if not present).  
-- Typical markup range: **5%–10%** (final % to be set with benchmarks/precedents).
+### Pros
+- **Simple to monitor**, standard globally, quarterly true-ups.  
+- Allocates residual profit to HQ; distributor keeps **routine** return.  
+- Often **cleaner for WHT** compared to dividends/interest in many jurisdictions.
 
 ### Documentation
-- **Intercompany agreement** supporting the Cost-Plus policy.  
-- **Guidance Memo** (policy) now; full **transfer pricing report** is retrospective (for prior FY) and can be prepared later if/when required.
+- **Intercompany Agreement** (LRD resale policy, true-up).  
+- **Guidance Memo** (margin target, testing, controls).  
+
+{% elif is_cp %}
+## How the Cost-Plus (Services) model works
+Characterize {{ f.full_legal_name_2 or "the service entity" }} as a **low-risk service provider** compensated at **cost + markup** (routine %).
+
+### Example
+| {{ f.full_legal_name_2 or "ServiceCo" }} | $ | Notes |
+|---|---:|---|
+| Allowable Costs | 200 | Direct costs only (exclude non-incurred items) |
+| Markup @ 8% | **16** | Arm’s-length markup (final % per benchmarks) |
+| **Charge to HQ / affiliates** | **216** | Invoiced monthly/quarterly |
+
+### Pros
+- **Transparent** and easy to evidence.  
+- Scales with activity level; low controversy in most markets.  
+- Fits shared-services / back-office profiles.
+
+### Documentation
+- **Intercompany Agreement** (scope, cost base, markup, invoicing).  
+- **Guidance Memo** (benchmark range, inclusions/exclusions, controls).
+
+{% elif is_lic %}
+## How the Royalty / Licensing model works
+{{ f.full_legal_name_2 or "the licensee" }} pays {{ f.full_legal_name_1 or "the IP owner" }} a **royalty** (typically % of revenue or a fixed fee) for using IP/brand/technology.  
+The rate reflects the **value of IP** in driving sales.
+
+### Example
+| Transaction | % / $ | Notes |
+|---|---:|---|
+| Net Sales | 1,000 | Local sales using licensed IP/brand |
+| Royalty @ 5% | **50** | Payable to {{ f.full_legal_name_1 or "HQ" }} |
+| Opex | (300) | Local operating costs |
+| Operating Profit | 150 | Profit after royalty deduction |
+
+### Pros
+- Aligns profit with **true IP owner**.  
+- **Scalable** — grows with revenue.  
+- **Simple** to bolt onto existing operations; widely accepted with support.
+
+### Documentation
+- **License Agreement** (rights, base, rate, territory).  
+- **Guidance Memo** (rate support, databases, comparables, adjustments).
+
+{% elif is_com %}
+## How the Commissionaire / Agency model works
+{{ f.full_legal_name_2 or "the local entity" }} acts as a **selling agent** for {{ f.full_legal_name_1 or "HQ" }}.  
+HQ books **revenue**; the local entity earns a **commission** for arranging sales. Little to no inventory/market risk locally.
+
+### Example
+| Transaction | $ | Notes |
+|---|---:|---|
+| Third-party Sales (recognized by HQ) | 1,000 | Contracts with customers sit with HQ |
+| Commission @ 7% | **70** | Fee to {{ f.full_legal_name_2 or "the agent" }} |
+| Agent Expenses | (50) | Local office, marketing |
+| Operating Profit | 20 | Routine return on agency functions |
+
+### Pros
+- Local market presence **without full distributor risks**.  
+- **No local inventory/COGS**; cleaner accounting.  
+- Good for early market entry or regulatory constraints.
+
+### Documentation
+- **Commissionaire/Agency Agreement** (authority limits, rate, billing).  
+- **Guidance Memo** (policy, comparables, controls).
+
 {% else %}
 ## Method overview
-Based on the classification and facts, apply the standard model documentation and invoicing mechanics used in Eran’s email summaries (LRD or Cost-Plus), including annual testing and periodic true-ups.
+Based on the facts, apply the standard model documentation and invoicing mechanics used in Eran’s email summaries (LRD, Cost-Plus, Royalty, or Commissionaire), including **annual testing** and **periodic true-ups** where relevant.
 {% endif %}
 
 ## Documents to prepare
-- **Intercompany agreement** — aligns with the selected model.
-- **Guidance Memo** — policy explaining methodology and controls. 
+- **Intercompany Agreement** — aligns with the selected model.
+- **Guidance Memo** — policy explaining methodology and controls.
 """
+
 
 def render_eran_email_summary(facts: CaseFacts, tx_type: str, title: str = "Summary Email") -> str:
     tmpl = Template(ERAN_EMAIL_TMPL)
