@@ -882,6 +882,27 @@ if extracted and st.session_state.show_preview:
         st.session_state.classification_cache = classify_transaction(llm, asdict(facts))
     cls = st.session_state.classification_cache
     tx_type = cls.get("transaction_type") or facts.recommended_model or "TBD"
+# --- Show Eran-style explainer prominently ---
+    reason = cls.get("short_rationale") or "Based on provided facts."
+
+    # If classifier is TBD, fall back to user-selected "Recommended model"
+    if (tx_type or "TBD").upper() == "TBD":
+        tx_type = facts.recommended_model or "TBD"
+
+    # Nudge strings so the template picks the right branch
+    _alias = (tx_type or "").lower()
+    if "wholesale resale" in _alias or "ecommerce resale" in _alias:
+        tx_type = "Wholesale Resale (LRD)" if "wholesale" in _alias else "Ecommerce Resale (LRD)"
+    elif "services" in _alias or "cost plus" in _alias:
+        tx_type = "Services (Cost Plus)"
+
+    st.markdown("#### Summary of Approval (Eran-style)")
+    st.caption(f"Classification confidence: {cls.get('confidence')}")
+    st.markdown(
+        render_eran_email_summary(facts, tx_type, title="Summary for Approval")
+    )
+    st.markdown(f"**Strategic Recommendation Summary:**\n\n{reason}")
+
     # Smart deliverables prediction (Eran-style)
     pred_deliverables, deliv_rationale = choose_deliverables_smart(facts, cls, llm=LLM())
     st.markdown("#### Predicted deliverables")
@@ -977,13 +998,6 @@ if extracted and st.session_state.show_preview:
                     st.info("This looks nuanced — please speak with Eran.")
                 else:
                     st.info("Noted. If you still have concerns, please speak with Eran.")
-
-    # Render a quick advisory summary preview (email-style content)
-    st.markdown("#### Advisory summary (email style)")
-    reason = cls.get("short_rationale") or "Based on provided facts."
-    st.caption(f"Classification confidence: {cls.get('confidence')}")
-    st.markdown(render_eran_email_summary(facts, tx_type, title="Summary for Approval"))
-    st.markdown(f"**Strategic Recommendation Summary:**\n\n{reason}")
 
     # =======================
     # Deliverables Picker (after preview & confirmation)
