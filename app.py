@@ -259,33 +259,26 @@ def _fmt(v):
 # =======================
 # Visualization & explainers
 # =======================
-def supply_chain_dot(f: CaseFacts) -> Digraph:
+# --- replace your current function with this ---
+def supply_chain_dot(f: CaseFacts) -> str:
+    from graphviz import Digraph  # local import to avoid any import timing weirdness
     g = Digraph("supply_chain", format="svg")
-
-    # layout direction + transparent background
     g.attr(rankdir="LR", bgcolor="transparent")
 
-    # use white text and edges for dark mode
-    g.attr(
-        "node",
-        shape="box",
-        style="rounded,filled",
-        fillcolor="#1e1e1e",
-        color="white",
-        fontcolor="white",
-        penwidth="1.8",
-    )
-    g.attr("edge", color="white", fontcolor="white", penwidth="1.6")
+    # high-contrast for dark themes
+    g.attr('node', shape="box", style="rounded", color="white", fontcolor="white", penwidth="1.4")
+    g.attr('edge', color="white", fontcolor="white", penwidth="1.4", arrowsize="0.8")
+    g.attr('graph', color="white")
 
     e1 = f.full_legal_name_1 or "Entity 1"
     e2 = f.full_legal_name_2 or "Entity 2"
-    flow = (f.transaction_flows or "Goods/Services/IP").replace("\n", " ")
-
     g.node("E1", e1)
     g.node("E2", e2)
+    flow = (f.transaction_flows or "Goods/Services/IP").replace("\n"," ")
     g.edge("E1", "E2", label=flow)
 
-    return g
+    return g.source
+
 
 
 
@@ -791,8 +784,9 @@ if extracted:
     # Supply chain diagram
     st.markdown("#### Visualize supply chain (confirm)")
     try:
-        dot = supply_chain_dot(facts)
-        st.graphviz_chart(dot)
+        g = supply_chain_dot(facts)
+        st.graphviz_chart(g)   # g is a DOT string now
+
     except Exception:
         st.info("Supply chain diagram unavailable — fill entity names and flows.")
     st.checkbox("I confirm the supply chain diagram is correct.", key="confirm_diagram")
