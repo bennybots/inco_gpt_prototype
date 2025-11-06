@@ -8,3 +8,4 @@ pydantic>=2.9
 docxtpl>=0.16
 simhash>=2.1.2
 streamlit>=1.37
+python-graphviz
