@@ -8,6 +8,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
 from typing import List, Optional
+import textwrap
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import streamlit as st
@@ -951,7 +952,7 @@ if extracted and st.session_state.show_preview:
     elif "services" in _alias or "cost plus" in _alias:
         tx_type = "Services (Cost Plus)"
 
-    st.markdown("#### Summary of Approval")
+    st.markdown("#### Summary of Approval (Eran-style)")
     st.caption(f"Classification confidence: {cls.get('confidence')}")
     st.markdown(
         render_eran_email_summary(facts, tx_type, title="Summary for Approval")
@@ -1108,43 +1109,51 @@ if extracted and st.session_state.show_preview:
 
         files = _render_docs(deliverables, ctx)
 
-        # lightweight client-facing advisory summary file
-        advisory_md = f"""# Advisory Summary
+        # --- build the email-style explainer block (Eran-style) ---
+        email_md = render_eran_email_summary(facts, tx_type, title="Summary for Approval")
 
-**Client:** {facts.full_legal_name_1 or "ClientCo"}  
-**Counterparty:** {facts.full_legal_name_2 or "RelatedCo"}  
+        # --- lightweight client-facing advisory summary file (your existing content) ---
+        advisory_md_body = f"""# Advisory Summary
 
-## Suggested Transfer Pricing Model
-**{tx_type}**
+        **Client:** {facts.full_legal_name_1 or "ClientCo"}  
+        **Counterparty:** {facts.full_legal_name_2 or "RelatedCo"}  
 
-## Company Snapshot (confirm)
-- **Entity 1 address:** {facts.entity1_address or "—"}
-- **Entity 2 address:** {facts.entity2_address or "—"}
-- **Employees (E1/E2):** {(facts.entity1_employees or 0)} / {(facts.entity2_employees or 0)}
-- **Primary flows:** {facts.transaction_flows or "—"}
-- **IP noted:** {facts.ip_assets or "—"}
-- **Countries:** {(", ".join(facts.countries_of_incorp)) if facts.countries_of_incorp else "—"}
+        ## Suggested Transfer Pricing Model
+        **{tx_type}**
 
-## Strategic Recommendation Summary
-{reason}
+        ## Company Snapshot (confirm)
+        - **Entity 1 address:** {facts.entity1_address or "—"}
+        - **Entity 2 address:** {facts.entity2_address or "—"}
+        - **Employees (E1/E2):** {(facts.entity1_employees or 0)} / {(facts.entity2_employees or 0)}
+        - **Primary flows:** {facts.transaction_flows or "—"}
+        - **IP noted:** {facts.ip_assets or "—"}
+        - **Countries:** {(", ".join(facts.countries_of_incorp)) if facts.countries_of_incorp else "—"}
 
-### Required documents
-{os.linesep.join(['- '+d for d in deliverables])}
+        ## Strategic Recommendation Summary
+        {reason}
 
-## Main facts (from your inputs)
-{format_key_facts_md(facts)}
+        ### Required documents
+        {os.linesep.join(['- ' + d for d in deliverables])}
 
-## Next Steps
-1. Confirm this summary (or flag anything that looks off).
-2. Provide org chart, registrations, addresses, employees & roles, and financials.
-3. We will finalize the selected document(s) above.
-"""
+        ## Main facts (from your inputs)
+        {format_key_facts_md(facts)}
+
+        ## Next Steps
+        1. Confirm this summary (or flag anything that looks off).
+        2. Provide org chart, registrations, addresses, employees & roles, and financials.
+        3. We will finalize the selected document(s) above.
+        """
+        advisory_md_body = textwrap.dedent(advisory_md_body).strip()
+        advisory_md = advisory_md_body + "\n\n---\n\n" + email_md
+
+
         st.download_button(
             "Download Advisory_Summary.md",
             data=advisory_md.encode("utf-8"),
             file_name="Advisory_Summary.md",
             mime="text/markdown",
         )
+
 
         # Save case log
         case_dir = pathlib.Path("knowledge/cases")
